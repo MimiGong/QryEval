@@ -484,11 +484,19 @@ public class QryEval {
      * @param fbTerms number of terms retrieved
      * @param fbMu the amount of smoothing used to calculate p(r|d)
      */
-    static String expandQuery(ArrayList<WeightedDoc> topDocs, int fbTerms, double fbMu)
+    static String expandQuery(ArrayList<WeightedDoc> topDocs,
+                              int fbTerms, double fbMu)
             throws IOException {
         CharSequence period = ".";
         CharSequence comma = ",";
         HashMap<String, Double> termScoreMap = new HashMap<>();
+
+        double overallDocDependentScore = 0.0;
+        for (WeightedDoc doc : topDocs) {
+            double doclen = Idx.getFieldLength("body", doc.docId);
+            overallDocDependentScore += 1.0 / (doclen + fbMu) * doc.score;
+        }
+
         for (WeightedDoc doc : topDocs) {
             int docId = doc.docId;
             TermVector termVector = new TermVector(docId, "body");
@@ -506,16 +514,23 @@ public class QryEval {
                 double tUnderC = ctf / sumDocLen;
                 double termScore = (tf + fbMu * tUnderC) / (doclen + fbMu) * score
                         * Math.log(1.0 / tUnderC);
-                if(!termScoreMap.containsKey(newTerm))
-                    termScoreMap.put(newTerm, termScore);
+                double defaultScore = (fbMu * tUnderC) / (doclen + fbMu) * score
+                        * Math.log(1.0 / tUnderC);
+                if(!termScoreMap.containsKey(newTerm)) {
+                    // base score is the score if all document don't contains a term
+                    double baseScore = (fbMu * tUnderC) * overallDocDependentScore
+                            * Math.log(1.0 / tUnderC);
+                    termScoreMap.put(newTerm, termScore + baseScore - defaultScore);
+                }
                 else
-                    termScoreMap.put(newTerm, termScore + termScoreMap.get(newTerm));
+                    termScoreMap.put(newTerm, termScore + termScoreMap.get(newTerm) - defaultScore);
             }
         }
         // sort terms by scores
         List<Map.Entry<String,Double>> list = new ArrayList<>(termScoreMap.entrySet());
         // sort by values descending order
-        Collections.sort(list, (o1, o2) -> (o2.getValue().compareTo(o1.getValue())));
+        Collections.sort(list, (o1, o2) -> (o2.getValue()
+                .compareTo(o1.getValue())));
         // construct expanedQuery
         StringBuilder queryBuilder = new StringBuilder();
         queryBuilder.append("#wand(");

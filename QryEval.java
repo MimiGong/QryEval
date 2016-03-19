@@ -9,10 +9,6 @@ import java.util.*;
 import org.apache.lucene.analysis.Analyzer.TokenStreamComponents;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
-import org.apache.lucene.document.Document;
-import org.apache.lucene.index.*;
-import org.apache.lucene.search.*;
-import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.Version;
 
 /**
@@ -98,9 +94,8 @@ public class QryEval {
         RetrievalModel model = initializeRetrievalModel(parameters);
 
         //  Perform experiments.
-
         processQueryFile(parameters.get("queryFilePath"),
-                parameters.get("trecEvalOutputPath"), model);
+                parameters.get("trecEvalOutputPath"), model, parameters);
 
         //  Clean up.
 
@@ -438,16 +433,113 @@ public class QryEval {
     }
 
     /**
+     * Load from input file and return internal doc id list
+     *
+     * @param fbInitialRankingFile initial ranking file path
+     * @param fbDocs number of top docs
+     */
+    static ArrayList<WeightedDoc> getTopDocs(String fbInitialRankingFile, int fbDocs)
+            throws IOException {
+        ArrayList<WeightedDoc> weightedDocs = new ArrayList<>();
+        try {
+            BufferedReader infile
+                    = new BufferedReader(new FileReader(fbInitialRankingFile));
+            for (int i = 0; i < fbDocs; i++) {
+                String doc = infile.readLine();
+                // split on any whitespace chars
+                String[] entries = doc.split("\\s+");
+                String externalId = entries[2];
+                double score = Double.parseDouble(entries[4]);
+                int internalId = Idx.getInternalDocid(externalId);
+                WeightedDoc newDoc = new WeightedDoc(internalId, score);
+                weightedDocs.add(newDoc);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return weightedDocs;
+    }
+
+    /**
+     * Load from input file and return internal doc id list
+     *
+     * @param scoreList initial query score list
+     * @param fbDocs number of top docs
+     */
+    static ArrayList<WeightedDoc> getTopDocs(ScoreList scoreList, int fbDocs) {
+        ArrayList<WeightedDoc> weightedDocs = new ArrayList<>();
+        for (int i = 0; i < fbDocs; i++) {
+            int internalId = scoreList.getDocid(i);
+            double score = scoreList.getDocidScore(i);
+            WeightedDoc newDoc = new WeightedDoc(internalId, score);
+            weightedDocs.add(newDoc);
+        }
+        return weightedDocs;
+    }
+
+    /**
+     * expand query on top documents
+     *
+     * @param topDocs top documents
+     * @param fbTerms number of terms retrieved
+     * @param fbMu the amount of smoothing used to calculate p(r|d)
+     */
+    static String expandQuery(ArrayList<WeightedDoc> topDocs, int fbTerms, double fbMu)
+            throws IOException {
+        CharSequence period = ".";
+        CharSequence comma = ",";
+        HashMap<String, Double> termScoreMap = new HashMap<>();
+        for (WeightedDoc doc : topDocs) {
+            int docId = doc.docId;
+            TermVector termVector = new TermVector(docId, "body");
+            double score = doc.score;
+            double sumDocLen = Idx.getSumOfFieldLengths("body");
+            double doclen = Idx.getFieldLength("body", docId);
+            // stems is the vocabulary. 0 indicates a stopword
+            for (int i = 1; i < termVector.stemsLength(); i++) {
+                String newTerm = termVector.stemString(i);
+                // skip any term that contain . or , to avoid confusion
+                if(newTerm.contains(period) || newTerm.contains(comma))
+                    continue;
+                double tf = termVector.stemFreq(i);
+                double ctf = termVector.totalStemFreq(i);
+                double tUnderC = ctf / sumDocLen;
+                double termScore = (tf + fbMu * tUnderC) / (doclen + fbMu) * score
+                        * Math.log(1.0 / tUnderC);
+                if(!termScoreMap.containsKey(newTerm))
+                    termScoreMap.put(newTerm, termScore);
+                else
+                    termScoreMap.put(newTerm, termScore + termScoreMap.get(newTerm));
+            }
+        }
+        // sort terms by scores
+        List<Map.Entry<String,Double>> list = new ArrayList<>(termScoreMap.entrySet());
+        // sort by values descending order
+        Collections.sort(list, (o1, o2) -> (o2.getValue().compareTo(o1.getValue())));
+        // construct expanedQuery
+        StringBuilder queryBuilder = new StringBuilder();
+        queryBuilder.append("#wand(");
+        for (int i = 0; i < fbTerms; i++) {
+            Map.Entry<String,Double> entry = list.get(i);
+            queryBuilder.append(String.format("%.4f %s ", entry.getValue(), entry.getKey()));
+        }
+        queryBuilder.append(")");
+        return queryBuilder.toString();
+    }
+
+    /**
      * Process the query file and output results.
      *
      * @param queryFilePath
      * @param outputFilePath
      * @param model
+     * @param parameters   Parameters specified in the parameters file
      * @throws IOException Error accessing the Lucene index.
      */
     static void processQueryFile(String queryFilePath,
                                  String outputFilePath,
-                                 RetrievalModel model)
+                                 RetrievalModel model,
+                                 Map<String, String> parameters)
             throws IOException {
 
         BufferedReader input = null;
@@ -476,15 +568,45 @@ public class QryEval {
 
                 ScoreList r = null;
 
+
+                // query expansion
+                if(parameters.containsKey("fb")) {
+                    boolean queryExpansion = Boolean.parseBoolean(parameters.get("fb"));
+                    if (queryExpansion) {
+                        ArrayList<WeightedDoc> topDocs;
+                        int fbDocs = Integer.parseInt(parameters.get("fbDocs"));
+                        int fbTerms = Integer.parseInt(parameters.get("fbTerms"));
+                        double fbMu = Double.parseDouble(parameters.get("fbMu"));
+                        double fbOriginWeight = Double.parseDouble(parameters.get("fbOrigWeight"));
+                        String fbOutputPath = parameters.get("fbExpansionQueryFile");
+
+                        if(parameters.containsKey("fbInitialRankingFile")) {
+                            String fbInitialRankingFile = parameters.get("fbInitialRankingFile");
+                            topDocs = getTopDocs(fbInitialRankingFile, fbDocs);
+                        }
+                        else {
+                            ScoreList initialResult = processQuery(query, model);
+                            initialResult.sort();
+                            topDocs = getTopDocs(initialResult, fbDocs);
+                        }
+                        // set the query to expanded query
+                        String expandedQuery = expandQuery(topDocs, fbTerms, fbMu);
+                        query = String.format("#wand(%.4f #and(%s) %.4f %s)", fbOriginWeight, query,
+                                (1.0 - fbOriginWeight), expandedQuery);
+                        System.out.println(query);
+                        printQuery(qid, expandedQuery, fbOutputPath);
+                    }
+                }
+
+                // process one query
                 r = processQuery(query, model);
 
                 if (r != null) {
                     // output result to file
                     printResults(qid, r, outputFilePath);
-                    System.out.println();
                 }
 
-                // query expansion
+
 
             }
         } catch (IOException ex) {
@@ -496,11 +618,29 @@ public class QryEval {
 
     /**
      * Print the query results.
-     * <p>
-     * THIS IS NOT THE CORRECT OUTPUT FORMAT. YOU MUST CHANGE THIS METHOD SO
-     * THAT IT OUTPUTS IN THE FORMAT SPECIFIED IN THE HOMEWORK PAGE, WHICH IS:
-     * <p>
-     * QueryID Q0 DocID Rank Score RunID
+     *
+     * @param queryName query id.
+     * @param query    query to write
+     * @param outputFilePath Output file's path
+     * @throws IOException Error accessing the Lucene index.
+     */
+    static void printQuery(String queryName, String query, String outputFilePath)
+            throws IOException {
+        // write to file
+        FileWriter fw = null;
+        try {
+            fw = new FileWriter(outputFilePath, true); //the true will append the new data
+            fw.write(String.format("%s: %s\n", queryName, query)); //appends the string to the file
+        } catch (IOException ioe) {
+            System.err.println("IOException: " + ioe.getMessage());
+        } finally {
+            if (fw != null)
+                fw.close();
+        }
+    }
+
+    /**
+     * Print the expanded query
      *
      * @param queryName Original query.
      * @param result    A list of document ids and scores

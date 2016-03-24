@@ -93,9 +93,22 @@ public class QryEval {
         Idx.initialize(parameters.get("indexPath"));
         RetrievalModel model = initializeRetrievalModel(parameters);
 
+        // if exists initial ranking file, process it
+        HashMap<String, ArrayList<WeightedDoc>> rankingResult = null;
+        if(model instanceof RetrievalModelIndri &&
+                parameters.containsKey("fb")) {
+            boolean queryExpansion = Boolean.parseBoolean(parameters.get("fb"));
+            if (queryExpansion) {
+                if (parameters.containsKey("fbInitialRankingFile")) {
+                    int fbDocs = Integer.parseInt(parameters.get("fbDocs"));
+                    rankingResult = processRankingFile(parameters.get("fbInitialRankingFile"), fbDocs);
+                }
+            }
+        }
+
         //  Perform experiments.
         processQueryFile(parameters.get("queryFilePath"),
-                parameters.get("trecEvalOutputPath"), model, parameters);
+                parameters.get("trecEvalOutputPath"), model, parameters, rankingResult);
 
         //  Clean up.
 
@@ -438,26 +451,34 @@ public class QryEval {
      * @param fbInitialRankingFile initial ranking file path
      * @param fbDocs number of top docs
      */
-    static ArrayList<WeightedDoc> getTopDocs(String fbInitialRankingFile, int fbDocs)
-            throws IOException {
-        ArrayList<WeightedDoc> weightedDocs = new ArrayList<>();
+    static HashMap<String, ArrayList<WeightedDoc>> processRankingFile(
+            String fbInitialRankingFile, int fbDocs) throws IOException {
+        HashMap<String, ArrayList<WeightedDoc>> weightedDocsList = new HashMap<>();
         try {
             BufferedReader infile
                     = new BufferedReader(new FileReader(fbInitialRankingFile));
-            for (int i = 0; i < fbDocs; i++) {
-                String doc = infile.readLine();
+            String doc;
+            while ((doc = infile.readLine()) != null && doc.length() > 0) {
                 // split on any whitespace chars
                 String[] entries = doc.split("\\s+");
-                String externalId = entries[2];
-                double score = Double.parseDouble(entries[4]);
-                int internalId = Idx.getInternalDocid(externalId);
-                WeightedDoc newDoc = new WeightedDoc(internalId, score);
-                weightedDocs.add(newDoc);
+                String qid = entries[0];
+                ArrayList<WeightedDoc> weightedDocs = weightedDocsList.get(qid);
+                if(weightedDocs == null || weightedDocs.size() < fbDocs) {
+                    String externalId = entries[2];
+                    double score = Double.parseDouble(entries[4]);
+                    int internalId = Idx.getInternalDocid(externalId);
+                    WeightedDoc newDoc = new WeightedDoc(internalId, score);
+                    if(weightedDocs == null) {
+                        weightedDocs = new ArrayList<>();
+                        weightedDocsList.put(qid, weightedDocs);
+                    }
+                    weightedDocs.add(newDoc);
+                }
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
-        return weightedDocs;
+        return weightedDocsList;
     }
 
     /**
@@ -549,12 +570,14 @@ public class QryEval {
      * @param outputFilePath
      * @param model
      * @param parameters   Parameters specified in the parameters file
+     * @param rankingResult preprocessed ranking results
      * @throws IOException Error accessing the Lucene index.
      */
     static void processQueryFile(String queryFilePath,
                                  String outputFilePath,
                                  RetrievalModel model,
-                                 Map<String, String> parameters)
+                                 Map<String, String> parameters,
+                                 HashMap<String, ArrayList<WeightedDoc>> rankingResult)
             throws IOException {
 
         BufferedReader input = null;
@@ -581,25 +604,21 @@ public class QryEval {
 
                 System.out.println("Query " + qLine);
 
-                ScoreList r = null;
-
-
                 // query expansion
-                if(parameters.containsKey("fb")) {
+                if(model instanceof RetrievalModelIndri &&
+                    parameters.containsKey("fb")) {
                     boolean queryExpansion = Boolean.parseBoolean(parameters.get("fb"));
                     if (queryExpansion) {
                         ArrayList<WeightedDoc> topDocs;
-                        int fbDocs = Integer.parseInt(parameters.get("fbDocs"));
                         int fbTerms = Integer.parseInt(parameters.get("fbTerms"));
                         double fbMu = Double.parseDouble(parameters.get("fbMu"));
                         double fbOriginWeight = Double.parseDouble(parameters.get("fbOrigWeight"));
                         String fbOutputPath = parameters.get("fbExpansionQueryFile");
-
-                        if(parameters.containsKey("fbInitialRankingFile")) {
-                            String fbInitialRankingFile = parameters.get("fbInitialRankingFile");
-                            topDocs = getTopDocs(fbInitialRankingFile, fbDocs);
+                        if(rankingResult != null) {
+                            topDocs = rankingResult.get(qid);
                         }
                         else {
+                            int fbDocs = Integer.parseInt(parameters.get("fbDocs"));
                             ScoreList initialResult = processQuery(query, model);
                             initialResult.sort();
                             topDocs = getTopDocs(initialResult, fbDocs);
@@ -614,7 +633,7 @@ public class QryEval {
                 }
 
                 // process one query
-                r = processQuery(query, model);
+                ScoreList r = processQuery(query, model);
 
                 if (r != null) {
                     // output result to file

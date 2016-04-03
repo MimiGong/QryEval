@@ -56,6 +56,7 @@ public class QryEval {
     private static final String[] TEXT_FIELDS =
             {"body", "title", "url", "inlink"};
 
+    private static PageRankScoreMap pagerankScoreMap;
 
     //  --------------- Methods ---------------------------------------
 
@@ -107,13 +108,169 @@ public class QryEval {
         }
 
         //  Perform experiments.
-        processQueryFile(parameters.get("queryFilePath"),
-                parameters.get("trecEvalOutputPath"), model, parameters, rankingResult);
-
+        if (model instanceof RetrievalModelLetor) {
+            /* if use learning to rank, train on training data */
+            /* get page rank map */
+            pagerankScoreMap =
+                    new PageRankScoreMap(parameters.get("letor:pageRankFile"));
+            /* get training queries */
+            ArrayList<String> queryList = new ArrayList<>();
+            ArrayList<Integer> qidList = new ArrayList<>();
+            readTrainingQuery(parameters.get("letor:trainingQueryFile"), qidList, queryList);
+            /* get relevance judge */
+            HashMap<Integer, RelevantDocList> judgeMap = new HashMap<>();
+            readTrainingJudgements(parameters.get("letor:trainingQrelsFile"), qidList, judgeMap);
+            /* get features */
+            FeatureExtractor extractor = new FeatureExtractor();
+            RetrievalModelBM25 bm25Model = ((RetrievalModelLetor) model).getBM25Model();
+            RetrievalModelIndri indriModel = ((RetrievalModelLetor) model).getIndriModel();
+            for (int i = 0; i < queryList.size(); i++) {
+                String[] queryTerms = tokenizeQuery(queryList.get(i));
+                int qid = qidList.get(i);
+                RelevantDocList docList = judgeMap.get(qid);
+                extractor.extract(docList.getIds(), queryTerms, bm25Model, indriModel,
+                        qid, pagerankScoreMap, docList.getRelevance());
+            }
+            String trainOutputPath = parameters.get("letor:trainingFeatureVectorsFile");
+            extractor.printToFile(trainOutputPath);
+            /* call svm rank to train the data */
+            double letorC = Double.parseDouble(parameters.get("letor:svmRankParamC"));
+            callSVMRankLearn(parameters.get("letor:svmRankLearnPath"), trainOutputPath,
+                    letorC, parameters.get("letor:svmRankModelFile"));
+            /* get initial ranking via BM25 model */
+            String featureVectorOutput = parameters.get("letor:testingFeatureVectorsFile");
+            FeatureExtractor testExtractor = new FeatureExtractor();
+            processQueryFile(parameters.get("queryFilePath"),
+                    featureVectorOutput, model, parameters, null, testExtractor);
+            /* print to output */
+            extractor.printToFile(featureVectorOutput);
+            /* classify on initial ranking */
+            String predictOutput = parameters.get("letor:testingDocumentScores");
+            callSVMRankClassify(parameters.get("letor:svmRankClassifyPath"),
+                    featureVectorOutput, parameters.get("letor:svmRankModelFile"),
+                    predictOutput);
+            /* read out SVM results */
+            readPredictOutput(predictOutput, testExtractor);
+            /* final output */
+            for (int qid : testExtractor.qidList) {
+                ArrayList<String> externalIds = new ArrayList<>();
+                ArrayList<Double> scores = new ArrayList<>();
+                testExtractor.getSortedDocsByQid(qid, externalIds, scores);
+                printResults(qid, externalIds, scores, parameters.get("trecEvalOutputPath"));
+            }
+        }
+        else {
+            processQueryFile(parameters.get("queryFilePath"),
+                    parameters.get("trecEvalOutputPath"), model,
+                    parameters, rankingResult, null);
+        }
         //  Clean up.
-
         timer.stop();
         System.out.println("Time:  " + timer);
+    }
+
+    private static void readPredictOutput(String filename, FeatureExtractor extractor) {
+        try (BufferedReader infile =
+                     new BufferedReader(new FileReader(filename))) {
+            String line;
+            int i = 0;
+            while ((line = infile.readLine()) != null && line.length() > 0) {
+                Double score = Double.parseDouble(line);
+                extractor.setScore(i, score);
+                i++;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static void callSVMRankLearn(String execPath, String qrelsFeatureOutputFile,
+                                         double letorC, String modelOutputFile)
+            throws Exception {
+        callSVMRank(new String[] { execPath, "-c", String.valueOf(letorC), qrelsFeatureOutputFile,
+                modelOutputFile });
+    }
+
+    private static void callSVMRankClassify(String execPath, String qrelsFeatureOutputFile,
+                                         String modelOutputFile, String predictOuput)
+            throws Exception {
+        /* svm_rank_classify test.dat model.dat predictions */
+        callSVMRank(new String[] { execPath, qrelsFeatureOutputFile, modelOutputFile,
+                predictOuput });
+    }
+
+    private static void callSVMRank(String [] cmdArgs)
+            throws Exception {
+        // runs svm_rank_learn from within Java to train the model
+        // execPath is the location of the svm_rank_learn utility,
+        // which is specified by letor:svmRankLearnPath in the parameter file.
+        // FEAT_GEN.c is the value of the letor:c parameter.
+        Process cmdProc = Runtime.getRuntime().exec(cmdArgs);
+
+        // The stdout/stderr consuming code MUST be included.
+        // It prevents the OS from running out of output buffer space and stalling.
+
+        // consume stdout and print it out for debugging purposes
+        BufferedReader stdoutReader = new BufferedReader(
+                new InputStreamReader(cmdProc.getInputStream()));
+        String line;
+        while ((line = stdoutReader.readLine()) != null) {
+            System.out.println(line);
+        }
+        // consume stderr and print it for debugging purposes
+        BufferedReader stderrReader = new BufferedReader(
+                new InputStreamReader(cmdProc.getErrorStream()));
+        while ((line = stderrReader.readLine()) != null) {
+            System.out.println(line);
+        }
+
+        // get the return value from the executable. 0 means success, non-zero
+        // indicates a problem
+        int retValue = cmdProc.waitFor();
+        if (retValue != 0) {
+            throw new Exception("SVM Rank crashed.");
+        }
+    }
+
+    private static void readTrainingQuery(String filename,
+                                          ArrayList<Integer> qidList, ArrayList<String> queryList) {
+        try (BufferedReader infile =
+                     new BufferedReader(new FileReader(filename))) {
+            String qLine;
+            while ((qLine = infile.readLine()) != null && qLine.length() > 0) {
+                int d = qLine.indexOf(':');
+                if (d < 0) {
+                    continue;
+                }
+                int qid = Integer.parseInt(qLine.substring(0, d));
+                String query = qLine.substring(d + 1);
+                qidList.add(qid);
+                queryList.add(query);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static void readTrainingJudgements(String filename, ArrayList<Integer> qidList,
+                                          HashMap<Integer, RelevantDocList> judgeMap) {
+        for (Integer qid : qidList) {
+            judgeMap.put(qid, new RelevantDocList());
+        }
+        // format: 151 0 clueweb09-en0000-00-03430 0
+        try (BufferedReader infile =
+                     new BufferedReader(new FileReader(filename))) {
+            String doc;
+            while ((doc = infile.readLine()) != null && doc.length() > 0) {
+                String[] entries = doc.split("\\s+");
+                Integer qid = Integer.parseInt(entries[0]);
+                String externalId = entries[2];
+                Integer relevance = Integer.parseInt(entries[3]);
+                judgeMap.get(qid).add(externalId, relevance);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     /**
@@ -150,6 +307,22 @@ public class QryEval {
             lambda = Double.parseDouble(parameters.get("Indri:lambda").trim());
             // create model
             model = new RetrievalModelIndri(mu, lambda);
+        } else if (modelString.equalsIgnoreCase("letor")) {
+            // get corresponding BM25 model
+            double k1, k3;
+            double b;
+            k1 = Double.parseDouble(parameters.get("BM25:k_1").trim());
+            k3 = Double.parseDouble(parameters.get("BM25:k_3").trim());
+            b = Double.parseDouble(parameters.get("BM25:b").trim());
+            RetrievalModelBM25 BM25Model = new RetrievalModelBM25(k1, b, k3);
+            // get corresponding indri model
+            double mu;
+            double lambda;
+            mu = Double.parseDouble(parameters.get("Indri:mu").trim());
+            lambda = Double.parseDouble(parameters.get("Indri:lambda").trim());
+            RetrievalModelIndri indriModel = new RetrievalModelIndri(mu, lambda);
+            // create letor model
+            model = new RetrievalModelLetor(BM25Model, indriModel);
         } else {
             throw new IllegalArgumentException
                     ("Unknown retrieval model " + parameters.get("retrievalAlgorithm"));
@@ -454,9 +627,8 @@ public class QryEval {
     static HashMap<String, ArrayList<WeightedDoc>> processRankingFile(
             String fbInitialRankingFile, int fbDocs) throws IOException {
         HashMap<String, ArrayList<WeightedDoc>> weightedDocsList = new HashMap<>();
-        try {
-            BufferedReader infile
-                    = new BufferedReader(new FileReader(fbInitialRankingFile));
+        try (BufferedReader infile
+                     = new BufferedReader(new FileReader(fbInitialRankingFile))) {
             String doc;
             while ((doc = infile.readLine()) != null && doc.length() > 0) {
                 // split on any whitespace chars
@@ -475,6 +647,7 @@ public class QryEval {
                     weightedDocs.add(newDoc);
                 }
             }
+            infile.close();
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -577,18 +750,13 @@ public class QryEval {
                                  String outputFilePath,
                                  RetrievalModel model,
                                  Map<String, String> parameters,
-                                 HashMap<String, ArrayList<WeightedDoc>> rankingResult)
+                                 HashMap<String, ArrayList<WeightedDoc>> rankingResult,
+                                 FeatureExtractor extractor)
             throws IOException {
-
-        BufferedReader input = null;
-
-        try {
-            String qLine = null;
-
-            input = new BufferedReader(new FileReader(queryFilePath));
-
+        try (BufferedReader input =
+                     new BufferedReader(new FileReader(queryFilePath))) {
+            String qLine;
             //  Each pass of the loop processes one query.
-
             while ((qLine = input.readLine()) != null) {
                 int d = qLine.indexOf(':');
 
@@ -605,8 +773,8 @@ public class QryEval {
                 System.out.println("Query " + qLine);
 
                 // query expansion
-                if(model instanceof RetrievalModelIndri &&
-                    parameters.containsKey("fb")) {
+                if (model instanceof RetrievalModelIndri &&
+                        parameters.containsKey("fb")) {
                     boolean queryExpansion = Boolean.parseBoolean(parameters.get("fb"));
                     if (queryExpansion) {
                         ArrayList<WeightedDoc> topDocs;
@@ -614,10 +782,9 @@ public class QryEval {
                         double fbMu = Double.parseDouble(parameters.get("fbMu"));
                         double fbOriginWeight = Double.parseDouble(parameters.get("fbOrigWeight"));
                         String fbOutputPath = parameters.get("fbExpansionQueryFile");
-                        if(rankingResult != null) {
+                        if (rankingResult != null) {
                             topDocs = rankingResult.get(qid);
-                        }
-                        else {
+                        } else {
                             int fbDocs = Integer.parseInt(parameters.get("fbDocs"));
                             ScoreList initialResult = processQuery(query, model);
                             initialResult.sort();
@@ -632,22 +799,39 @@ public class QryEval {
                     }
                 }
 
-                // process one query
-                ScoreList r = processQuery(query, model);
-
-                if (r != null) {
-                    // output result to file
-                    printResults(qid, r, outputFilePath);
+                if (model instanceof RetrievalModelLetor) {
+                    RetrievalModelBM25 bm25Model = ((RetrievalModelLetor) model).getBM25Model();
+                    RetrievalModelIndri indriModel = ((RetrievalModelLetor) model).getIndriModel();
+                    String[] queryTerms = tokenizeQuery(query);
+                    ScoreList r = processQuery(query, bm25Model);
+                    ArrayList<String> externalIds = getExternalIds(r, 100);
+                    Integer qidInt = Integer.parseInt(qid);
+                    extractor.extract(externalIds, queryTerms, bm25Model, indriModel,
+                            qidInt, pagerankScoreMap, null);
                 }
-
-
-
+                else {
+                    // process one query
+                    ScoreList r = processQuery(query, model);
+                    if (r != null) {
+                        // output result to file
+                        printResults(qid, r, outputFilePath);
+                    }
+                }
             }
         } catch (IOException ex) {
             ex.printStackTrace();
-        } finally {
-            input.close();
         }
+    }
+
+    static ArrayList<String> getExternalIds(ScoreList result, int num)
+            throws IOException {
+        ArrayList<String> externalIds = new ArrayList<>();
+        // print best 100 results
+        int endIndex = Math.min(num, result.size());
+        for (int i = 0; i < endIndex; i++) {
+            externalIds.add(Idx.getExternalDocid(result.getDocid(i)));
+        }
+        return externalIds;
     }
 
     /**
@@ -710,6 +894,33 @@ public class QryEval {
         } finally {
             if (fw != null)
                 fw.close();
+        }
+    }
+
+    static void printResults(int queryName, ArrayList<String> externalIds,
+                             ArrayList<Double> results, String outputFilePath)
+            throws IOException {
+        // Debug info
+        System.out.println(queryName + ":  ");
+        StringBuilder stringBuilder = new StringBuilder();
+        if (results.size() < 1) {
+            // no results, print a dummy
+            stringBuilder.append(String.format("%d\t%s\t%s\t%d\t%g\t%s\n",
+                    queryName, "Q0", "dummy", 1, 0., "RunID"));
+        } else {
+            int endIndex = Math.min(100, results.size());
+            for (int i = 0; i < endIndex; i++) {
+                stringBuilder.append(String.format("%d\t%s\t%s\t%d\t%g\t%s\n",
+                        queryName, "Q0", externalIds.get(i),
+                        i + 1, results.get(i), "RunID"));
+            }
+        }
+        // write to file
+        try (FileWriter fw = new FileWriter(outputFilePath, true)) {
+             //the true will append the new data
+            fw.write(stringBuilder.toString());//appends the string to the file
+        } catch (IOException ioe) {
+            System.err.println("IOException: " + ioe.getMessage());
         }
     }
 

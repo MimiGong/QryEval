@@ -7,9 +7,9 @@ import java.util.HashMap;
  */
 public class PageRankScoreMap {
 
-    private HashMap<String, Float> scoreMap;
+    private HashMap<String, Double> scoreMap;
 
-    public float get(String externalId) {
+    public Double get(String externalId) {
         return scoreMap.get(externalId);
     }
 
@@ -26,7 +26,7 @@ public class PageRankScoreMap {
                 String[] entries = doc.split("\\s+");
                 if (entries.length == 2) {
                     String externalId = entries[0];
-                    Float score = Float.parseFloat(entries[1]);
+                    Double score = Double.parseDouble(entries[1]);
                     scoreMap.put(externalId, score);
                 }
             }

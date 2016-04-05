@@ -80,8 +80,9 @@ public class FeatureExtractor {
             int fromWikipedia = rawUrl.toLowerCase().contains("wikipedia.org") ? 1 : 0;
             scores[2] = (double) fromWikipedia;
             // f4: PageRank score for d (read from file).
-            double pagerankScore = pagerankScoreMap.get(externalId);
-            scores[3] = pagerankScore;
+            Double pagerankScore = pagerankScoreMap.get(externalId);
+            // if does not exist, set to 0.0
+            scores[3] = pagerankScore == null ? 0.0 : pagerankScore;
             // f5: BM25 score for <q, dbody>.
             // f6: Indri score for <q, dbody>.
             // f7: Term overlap score for <q, dbody>.
@@ -112,13 +113,18 @@ public class FeatureExtractor {
     public void normalize() {
         if (docFeatureList.size() == 0)
             return;
-        double[] minScores = docFeatureList.get(0).scores.clone();
-        double[] maxScores = docFeatureList.get(0).scores.clone();
+        double [] doc0Scores = docFeatureList.get(0).scores;
+        double[] minScores = new double[doc0Scores.length];
+        double[] maxScores = new double[doc0Scores.length];
+        for (int i = 0; i < doc0Scores.length; i++) {
+            minScores[i] = doc0Scores[i];
+            maxScores[i] = doc0Scores[i];
+        }
         /* get min and max */
         for (DocFeatures doc : docFeatureList) {
             for (int i = 0; i <  18; i++) {
                 minScores[i] = Math.min(minScores[i], doc.scores[i]);
-                maxScores[i] = Math.min(maxScores[i], doc.scores[i]);
+                maxScores[i] = Math.max(maxScores[i], doc.scores[i]);
             }
         }
         double[] ranges = new double[18];

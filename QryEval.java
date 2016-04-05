@@ -143,7 +143,7 @@ public class QryEval {
             processQueryFile(parameters.get("queryFilePath"),
                     featureVectorOutput, model, parameters, null, testExtractor);
             /* print to output */
-            extractor.printToFile(featureVectorOutput);
+            testExtractor.printToFile(featureVectorOutput);
             /* classify on initial ranking */
             String predictOutput = parameters.get("letor:testingDocumentScores");
             callSVMRankClassify(parameters.get("letor:svmRankClassifyPath"),

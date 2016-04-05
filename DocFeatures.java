@@ -23,7 +23,10 @@ public class DocFeatures {
         this.relevance = relevance;
         this.qid = qid;
         this.externalId = externalId;
-        this.scores = scores.clone();
+
+        this.scores = new double[scores.length];
+        for (int i = 0; i < scores.length; i++)
+            this.scores[i] = scores[i];
     }
 
     public String toString() {

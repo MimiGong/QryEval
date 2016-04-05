@@ -113,6 +113,8 @@ public class QryEval {
             /* get page rank map */
             pagerankScoreMap =
                     new PageRankScoreMap(parameters.get("letor:pageRankFile"));
+            /* get disabled features */
+            readDisableSet(parameters.get("letor:featureDisable"));
             /* get training queries */
             ArrayList<String> queryList = new ArrayList<>();
             ArrayList<Integer> qidList = new ArrayList<>();
@@ -167,6 +169,23 @@ public class QryEval {
         //  Clean up.
         timer.stop();
         System.out.println("Time:  " + timer);
+    }
+
+    private static void readDisableSet(String featureDisable) {
+        if (featureDisable != null) {
+            String[] features = featureDisable.split(",");
+            Set<Integer> disableSet = new HashSet<>();
+            for (String feature : features) {
+                try{
+                    Integer featureNum = Integer.parseInt(feature);
+                    disableSet.add(featureNum);
+                }
+                catch (NumberFormatException e) {
+                    e.printStackTrace();
+                }
+            }
+            DocFeatures.setDisableSet(disableSet);
+        }
     }
 
     private static void readPredictOutput(String filename, FeatureExtractor extractor) {

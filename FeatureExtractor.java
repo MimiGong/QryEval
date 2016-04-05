@@ -3,6 +3,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.DoubleSummaryStatistics;
 
 /**
  * create learn to rank features
@@ -58,7 +59,7 @@ public class FeatureExtractor {
                         int qid,
                         PageRankScoreMap pagerankScoreMap,
                         ArrayList<Integer> relevanceList) throws IOException {
-        double [] scores = new double[18];
+        Double [] scores = new Double[18];
         qidList.add(qid);
         for (int i = 0; i < testDocs.size(); i++) {
             String externalId = testDocs.get(i);
@@ -71,7 +72,7 @@ public class FeatureExtractor {
             }
             // f1: Spam score for d (read from index)
             int spamScore = Integer.parseInt(Idx.getAttribute("score", docId));
-            scores[0] = spamScore;
+            scores[0] = (double)spamScore;
             // f2: Url depth for d(number of '/' in the rawUrl field).
             String rawUrl = Idx.getAttribute("rawUrl", docId);
             int urlDepth = countMatches(rawUrl, '/');
@@ -81,8 +82,7 @@ public class FeatureExtractor {
             scores[2] = (double) fromWikipedia;
             // f4: PageRank score for d (read from file).
             Double pagerankScore = pagerankScoreMap.get(externalId);
-            // if does not exist, set to 0.0
-            scores[3] = pagerankScore == null ? 0.0 : pagerankScore;
+            scores[3] = pagerankScore;
             // f5: BM25 score for <q, dbody>.
             // f6: Indri score for <q, dbody>.
             // f7: Term overlap score for <q, dbody>.
@@ -113,16 +113,18 @@ public class FeatureExtractor {
     public void normalize() {
         if (docFeatureList.size() == 0)
             return;
-        double [] doc0Scores = docFeatureList.get(0).scores;
-        double[] minScores = new double[doc0Scores.length];
-        double[] maxScores = new double[doc0Scores.length];
+        Double [] doc0Scores = docFeatureList.get(0).scores;
+        Double[] minScores = new Double[doc0Scores.length];
+        Double[] maxScores = new Double[doc0Scores.length];
         for (int i = 0; i < doc0Scores.length; i++) {
-            minScores[i] = doc0Scores[i];
-            maxScores[i] = doc0Scores[i];
+            minScores[i] = Double.MAX_VALUE;
+            maxScores[i] = Double.MIN_VALUE;
         }
         /* get min and max */
         for (DocFeatures doc : docFeatureList) {
-            for (int i = 0; i <  18; i++) {
+            for (int i = 0; i < 18; i++) {
+                if(doc.scores[i] == null)
+                    continue;
                 minScores[i] = Math.min(minScores[i], doc.scores[i]);
                 maxScores[i] = Math.max(maxScores[i], doc.scores[i]);
             }
@@ -134,6 +136,8 @@ public class FeatureExtractor {
         /* normalize all scores */
         for (DocFeatures doc : docFeatureList) {
             for (int i = 0; i <  18; i++) {
+                if (doc.scores[i] == null)
+                    continue;
                 doc.scores[i] = ranges[i] == 0. ? 0. :
                         (doc.scores[i] - minScores[i]) / ranges[i];
             }
@@ -160,10 +164,14 @@ public class FeatureExtractor {
     private void getScoreFeatures(String[] queryStems, int docId, String field,
                                   RetrievalModelBM25 bm25Model,
                                   RetrievalModelIndri indriModel,
-                                  double [] scores, int offset) throws IOException {
+                                  Double [] scores, int offset) throws IOException {
         TermVector termVector = new TermVector(docId, field);
-        if (termVector.stemsLength() == 0)
+        if (termVector.stemsLength() == 0) {
+            scores[offset] = null;
+            scores[offset+1] = null;
+            scores[offset+2] = null;
             return;
+        }
 
         double sumDocLen = Idx.getSumOfFieldLengths(field);
         double docLen = Idx.getFieldLength(field, docId);
@@ -221,7 +229,7 @@ public class FeatureExtractor {
         }
         double overlapScore = (double)matchCount / (double)querySize;
         scores[offset] = bm25Score;
-        scores[offset+1] = indriScore;
+        scores[offset+1] = matchCount > 0 ? indriScore : 0.0;
         scores[offset+2] = overlapScore;
     }
 

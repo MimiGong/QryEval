@@ -1,30 +1,43 @@
+import java.util.Set;
+
 /**
- * Created by wudikuail on 4/2/16.
+ * this class associates document with its features
  */
 public class DocFeatures {
 
     double predictRelevance;
     int relevance;
     int qid;
-    double [] scores;
+    Double [] scores;
     String externalId;
 
-    public String featureFormatter(double[] scores) {
+    static Set<Integer> disableSet;
+
+    static void setDisableSet(Set<Integer> set) {
+        disableSet = set;
+    }
+
+    static boolean notDisableItem(Set<Integer> set, int item) {
+        return set == null || !set.contains(item);
+    }
+
+    public String featureFormatter(Double[] scores) {
         int i = 1;
         StringBuilder builder = new StringBuilder();
-        for (double score : scores) {
-            builder.append(String.format("%d:%f ", i, score));
+        for (Double score : scores) {
+            if (score != null && notDisableItem(disableSet, i))
+                builder.append(String.format("%d:%f ", i, score));
             i++;
         }
         return builder.toString();
     }
 
-    public DocFeatures(int relevance, int qid, String externalId, double[] scores) {
+    public DocFeatures(int relevance, int qid, String externalId, Double[] scores) {
         this.relevance = relevance;
         this.qid = qid;
         this.externalId = externalId;
 
-        this.scores = new double[scores.length];
+        this.scores = new Double[scores.length];
         for (int i = 0; i < scores.length; i++)
             this.scores[i] = scores[i];
     }

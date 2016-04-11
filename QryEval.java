@@ -847,6 +847,7 @@ public class QryEval {
         ArrayList<String> externalIds = new ArrayList<>();
         // print best 100 results
         int endIndex = Math.min(num, result.size());
+        result.sort();
         for (int i = 0; i < endIndex; i++) {
             externalIds.add(Idx.getExternalDocid(result.getDocid(i)));
         }
@@ -920,7 +921,6 @@ public class QryEval {
                              ArrayList<Double> results, String outputFilePath)
             throws IOException {
         // Debug info
-        System.out.println(queryName + ":  ");
         StringBuilder stringBuilder = new StringBuilder();
         if (results.size() < 1) {
             // no results, print a dummy
@@ -929,7 +929,7 @@ public class QryEval {
         } else {
             int endIndex = Math.min(100, results.size());
             for (int i = 0; i < endIndex; i++) {
-                stringBuilder.append(String.format("%d\t%s\t%s\t%d\t%g\t%s\n",
+                stringBuilder.append(String.format("%d\t%s\t%s\t%d\t%.12f\t%s\n",
                         queryName, "Q0", externalIds.get(i),
                         i + 1, results.get(i), "RunID"));
             }

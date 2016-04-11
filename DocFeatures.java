@@ -26,7 +26,7 @@ public class DocFeatures {
         StringBuilder builder = new StringBuilder();
         for (Double score : scores) {
             if (score != null && notDisableItem(disableSet, i))
-                builder.append(String.format("%d:%f ", i, score));
+                builder.append(String.format("%d:%.16f ", i, score));
             i++;
         }
         return builder.toString();

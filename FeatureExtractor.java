@@ -100,8 +100,10 @@ public class FeatureExtractor {
             // f16: Term overlap score for <q, dinlink>.
             getScoreFeatures(queryTerms, docId, "inlink", bm25Model, indriModel, scores, 13);
             // f17 f18 imagination
-            scores[16] = 0.0;
-            scores[17] = 0.0;
+            // f17 term overlap of keywords
+            scores[16] = getOverlapScore(queryTerms, docId, "keywords");
+            // f18 complexity intuitively measures how hard to memorize the root url
+            scores[17] = getUrlComplexity(rawUrl);
             /* relevance is 0 for test docs */
             if (relevanceList != null)
                 docFeatureList.add(new DocFeatures(relevanceList.get(i), qid, externalId, scores));
@@ -159,6 +161,35 @@ public class FeatureExtractor {
         } catch (IOException ioe) {
             System.err.println("IOException: " + ioe.getMessage());
         }
+    }
+
+    private Double getUrlComplexity(String rawUrl) {
+        int start = rawUrl.indexOf("://") + ".//".length();
+        int end = rawUrl.indexOf("/", start);
+        String url = rawUrl.substring(start, end);
+        return Math.max((double)(url.length() - "www.wikipedia.org".length()), 0.0);
+    }
+
+    private Double getOverlapScore(String[] queryStems, int docId,
+                              String field) throws IOException {
+        TermVector termVector = new TermVector(docId, field);
+        if (termVector.stemsLength() == 0) {
+            return null;
+        }
+        int querySize = queryStems.length;
+        int matchCount = 0;
+        for (int i = 0; i < querySize; i++) {
+            String queryTerm = queryStems[i];
+            for (int j = 1; j < termVector.stemsLength(); j++) {
+                if (termVector.stemString(j).equals(queryTerm)) {
+                    /* overlap */
+                    matchCount++;
+                    break;
+                }
+            }
+        }
+        Double overlapScore = (double)matchCount / (double)querySize;
+        return overlapScore;
     }
 
     private void getScoreFeatures(String[] queryStems, int docId, String field,

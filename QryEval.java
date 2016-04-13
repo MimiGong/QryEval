@@ -126,15 +126,15 @@ public class QryEval {
             FeatureExtractor extractor = new FeatureExtractor();
             RetrievalModelBM25 bm25Model = ((RetrievalModelLetor) model).getBM25Model();
             RetrievalModelIndri indriModel = ((RetrievalModelLetor) model).getIndriModel();
+            String trainOutputPath = parameters.get("letor:trainingFeatureVectorsFile");
             for (int i = 0; i < queryList.size(); i++) {
                 String[] queryTerms = tokenizeQuery(queryList.get(i));
                 int qid = qidList.get(i);
                 RelevantDocList docList = judgeMap.get(qid);
                 extractor.extract(docList.getIds(), queryTerms, bm25Model, indriModel,
                         qid, pagerankScoreMap, docList.getRelevance());
+                extractor.printToFile(trainOutputPath);
             }
-            String trainOutputPath = parameters.get("letor:trainingFeatureVectorsFile");
-            extractor.printToFile(trainOutputPath);
             /* call svm rank to train the data */
             double letorC = Double.parseDouble(parameters.get("letor:svmRankParamC"));
             callSVMRankLearn(parameters.get("letor:svmRankLearnPath"), trainOutputPath,
@@ -144,8 +144,6 @@ public class QryEval {
             FeatureExtractor testExtractor = new FeatureExtractor();
             processQueryFile(parameters.get("queryFilePath"),
                     featureVectorOutput, model, parameters, null, testExtractor);
-            /* print to output */
-            testExtractor.printToFile(featureVectorOutput);
             /* classify on initial ranking */
             String predictOutput = parameters.get("letor:testingDocumentScores");
             callSVMRankClassify(parameters.get("letor:svmRankClassifyPath"),
@@ -827,6 +825,8 @@ public class QryEval {
                     Integer qidInt = Integer.parseInt(qid);
                     extractor.extract(externalIds, queryTerms, bm25Model, indriModel,
                             qidInt, pagerankScoreMap, null);
+                                /* print to output */
+                    extractor.printToFile(outputFilePath);
                 }
                 else {
                     // process one query

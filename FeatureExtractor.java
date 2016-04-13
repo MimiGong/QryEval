@@ -16,20 +16,22 @@ public class FeatureExtractor {
 
     ArrayList<DocFeatures> docFeatureList = new ArrayList<>();
 
+    ArrayList<DocFeatures> testDocList = new ArrayList<>();
+
     public void setScore(int index, double score) {
-        if (index >= docFeatureList.size()) {
+        if (index >= testDocList.size()) {
             System.out.println("set score out of bound!");
             return;
         }
-        docFeatureList.get(index).predictRelevance = score;
+        testDocList.get(index).predictRelevance = score;
     }
 
     /* must call by qid in ascending order */
     public void getSortedDocsByQid(int qid, ArrayList<String> externalIds,
                                    ArrayList<Double> scores) {
         ArrayList<DocFeatures> docs = new ArrayList<>();
-        while(iterator < docFeatureList.size() && docFeatureList.get(iterator).qid == qid) {
-            docs.add(docFeatureList.get(iterator));
+        while(iterator < testDocList.size() && testDocList.get(iterator).qid == qid) {
+            docs.add(testDocList.get(iterator));
             iterator++;
         }
         Collections.sort(docs, (d1, d2) ->
@@ -156,11 +158,13 @@ public class FeatureExtractor {
             builder.append("\n");
         }
         // write to file
-        try (FileWriter fw = new FileWriter(filename, false)) {
+        try (FileWriter fw = new FileWriter(filename, true)) {
             fw.write(builder.toString());
         } catch (IOException ioe) {
             System.err.println("IOException: " + ioe.getMessage());
         }
+        testDocList.addAll(docFeatureList);
+        docFeatureList.clear();
     }
 
     private Double getUrlComplexity(String rawUrl) {
